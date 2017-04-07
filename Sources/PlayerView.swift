@@ -109,26 +109,6 @@ open class PlayerView: UIView {
     /// Player delegate.
     open weak var delegate: PlayerDelegate?
 
-    // configuration
-
-    /// Local or remote URL for the file asset to be played.
-    ///
-    /// - Parameter url: URL of the asset.
-    open var url: URL? {
-        didSet {
-            setup(url: url)
-        }
-    }
-
-    open var urlLink: String? {
-        didSet {
-            guard let urlLink = urlLink, let url = URL(string: urlLink) else {
-                return
-            }
-            setup(url: url)
-        }
-    }
-
     /// Mutes audio playback when true.
     open var muted: Bool {
         get {
@@ -369,15 +349,24 @@ open class PlayerView: UIView {
         }
     }
 
-    /// Captures a snapshot of the current Player view.
-    ///
-    /// - Returns: A UIImage of the player view.
-    open func takeSnapshot() -> UIImage {
-        UIGraphicsBeginImageContextWithOptions(self.frame.size, false, UIScreen.main.scale)
-        self.drawHierarchy(in: self.bounds, afterScreenUpdates: true)
-        let image = UIGraphicsGetImageFromCurrentImageContext()
-        UIGraphicsEndImageContext()
-        return image!
+
+    open func takeSnapshot(completion: @escaping ((UIImage?)->Void)) {
+        guard let player = player, let asset = player.currentItem?.asset else {
+            completion(nil)
+            return
+        }
+        let imageGenerator = AVAssetImageGenerator(asset: asset)
+        imageGenerator.appliesPreferredTrackTransform = true
+        let times = [NSValue(time:player.currentTime())]
+        imageGenerator.generateCGImagesAsynchronously(forTimes: times) { requestedTime, cgImage, actualTime, result, error in
+            guard let cgImage = cgImage else {
+                completion(nil)
+                return
+            }
+            
+            return completion(UIImage(cgImage: cgImage))
+            
+        }
     }
 
 }
@@ -386,7 +375,7 @@ open class PlayerView: UIView {
 
 extension PlayerView {
 
-    open func setup(url: URL?) {
+    open func setup(url: URL?, startTime: Double? = nil) {
         // ensure everything is reset beforehand
         if self.playbackState == .playing {
             self.pause()
@@ -396,11 +385,11 @@ extension PlayerView {
 
         if let url = url {
             let asset = AVURLAsset(url: url, options: .none)
-            self.setupAsset(asset)
+            self.setupAsset(asset, startTime:startTime)
         }
     }
 
-    fileprivate func setupAsset(_ asset: AVAsset) {
+    fileprivate func setupAsset(_ asset: AVAsset, startTime: Double?) {
         if self.playbackState == .playing {
             self.pause()
         }
@@ -415,26 +404,28 @@ extension PlayerView {
         let keys: [String] = [PlayerTracksKey, PlayerPlayableKey, PlayerDurationKey]
 
         self._asset.loadValuesAsynchronously(forKeys: keys, completionHandler: { () -> Void in
-            DispatchQueue.main.sync(execute: { () -> Void in
 
-                for key in keys {
-                    var error: NSError?
-                    let status = self._asset.statusOfValue(forKey: key, error:&error)
-                    if status == .failed {
-                        self.playbackState = .failed
-                        return
-                    }
-                }
-
-                if self._asset.isPlayable == false {
+            for key in keys {
+                var error: NSError?
+                let status = self._asset.statusOfValue(forKey: key, error:&error)
+                if status == .failed {
                     self.playbackState = .failed
                     return
                 }
+            }
 
-                let playerItem: AVPlayerItem = AVPlayerItem(asset:self._asset)
-                self.setupPlayerItem(playerItem)
+            if self._asset.isPlayable == false {
+                self.playbackState = .failed
+                return
+            }
 
-            })
+            let playerItem: AVPlayerItem = AVPlayerItem(asset:self._asset)
+            if let startTime = startTime {
+                playerItem.seek(to: CMTime(seconds: startTime, preferredTimescale: CMTimeScale(NSEC_PER_SEC)), toleranceBefore: kCMTimeZero
+                    ,toleranceAfter: kCMTimeZero )
+            }
+            self.setupPlayerItem(playerItem)
+
         })
     }
 
